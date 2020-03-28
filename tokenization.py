@@ -186,7 +186,9 @@ class FullTokenizer(object):
     if spm_model_file:
       self.sp_model = spm.SentencePieceProcessor()
       tf.logging.info("loading sentence piece model")
-      self.sp_model.Load(spm_model_file)
+      # Handle cases where SP can't load the file, but gfile can.
+      sp_model_ = tf.gfile.GFile(spm_model_file, "rb").read()
+      self.sp_model.LoadFromSerializedProto(sp_model_)
       # Note(mingdachen): For the purpose of consisent API, we are
       # generating a vocabulary for the sentence piece tokenizer.
       self.vocab = {self.sp_model.IdToPiece(i): i for i
