@@ -1046,7 +1046,8 @@ def conv_attention_layer(from_tensor,
   unfolded = tf.reshape(unfolded, [batch_size, from_seq_length, num_attention_heads, size_per_head, kernel_size])
   to_tensor = tf.multiply(unfolded, weight)
   to_tensor = tf.math.reduce_sum(to_tensor, -1)
-  return tf.reshape(to_tensor, [batch_size, from_seq_length, num_attention_heads * size_per_head])
+  #return tf.reshape(to_tensor, [batch_size, from_seq_length, num_attention_heads * size_per_head])
+  return to_tensor
 
 
 def attention_ffn_block(layer_input,
