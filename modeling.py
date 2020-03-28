@@ -55,7 +55,9 @@ class AlbertConfig(object):
                attention_probs_dropout_prob=0,
                max_position_embeddings=512,
                type_vocab_size=2,
-               initializer_range=0.02):
+               initializer_range=0.02,
+               kernel_size=0,
+               weight_softmax=True):
     """Constructs AlbertConfig.
 
     Args:
@@ -100,6 +102,8 @@ class AlbertConfig(object):
     self.max_position_embeddings = max_position_embeddings
     self.type_vocab_size = type_vocab_size
     self.initializer_range = initializer_range
+    self.kernel_size = kernel_size
+    self.weight_softmax = weight_softmax
 
   @classmethod
   def from_dict(cls, json_object):
@@ -237,7 +241,9 @@ class AlbertModel(object):
             attention_probs_dropout_prob=config.attention_probs_dropout_prob,
             initializer_range=config.initializer_range,
             do_return_all_layers=True,
-            use_einsum=use_einsum)
+            use_einsum=use_einsum,
+            kernel_size=config.kernel_size,
+            weight_softmax=config.weight_softmax)
 
       self.sequence_output = self.all_encoder_layers[-1]
       # The "pooler" converts the encoded sequence tensor of shape
@@ -932,6 +938,117 @@ def attention_layer(from_tensor,
   return tf.transpose(new_embeddings, [0, 2, 1, 3])
 
 
+def unfold(from_tensor, kernel_size):
+  from_shape = get_shape_list(from_tensor, expected_rank=[2, 3])
+  if len(from_shape) == 3:
+    paddings = [[0, 0], [kernel_size - 1, 0], [0,0]]
+  else:
+    paddings = [[0, 0], [kernel_size - 1, 0]]
+  t = tf.expand_dims(tf.pad(from_tensor, paddings), -1)
+  l = [t[:, i:i-kernel_size+1] for i in range(kernel_size - 1)]
+  l.append(t[:, kernel_size-1:])
+  t = tf.stack(l, -1)
+  return t
+
+
+def conv_attention_layer(from_tensor,
+                        to_tensor,
+                        attention_mask=None,
+                        num_attention_heads=1,
+                        query_act=None,
+                        key_act=None,
+                        value_act=None,
+                        attention_probs_dropout_prob=0.0,
+                        initializer_range=0.02,
+                        batch_size=None,
+                        from_seq_length=None,
+                        to_seq_length=None,
+                        use_einsum=True,
+                        kernel_size=7,
+                        weight_softmax=True):
+  """Performs multi-headed attention from `from_tensor` to `to_tensor`.
+
+  Args:
+    from_tensor: float Tensor of shape [batch_size, from_seq_length,
+      from_width].
+    to_tensor: float Tensor of shape [batch_size, to_seq_length, to_width].
+    attention_mask: (optional) int32 Tensor of shape [batch_size,
+      from_seq_length, to_seq_length]. The values should be 1 or 0. The
+      attention scores will effectively be set to -infinity for any positions in
+      the mask that are 0, and will be unchanged for positions that are 1.
+    num_attention_heads: int. Number of attention heads.
+    query_act: (optional) Activation function for the query transform.
+    key_act: (optional) Activation function for the key transform.
+    value_act: (optional) Activation function for the value transform.
+    attention_probs_dropout_prob: (optional) float. Dropout probability of the
+      attention probabilities.
+    initializer_range: float. Range of the weight initializer.
+    batch_size: (Optional) int. If the input is 2D, this might be the batch size
+      of the 3D version of the `from_tensor` and `to_tensor`.
+    from_seq_length: (Optional) If the input is 2D, this might be the seq length
+      of the 3D version of the `from_tensor`.
+    to_seq_length: (Optional) If the input is 2D, this might be the seq length
+      of the 3D version of the `to_tensor`.
+    use_einsum: bool. Whether to use einsum or reshape+matmul for dense layers
+
+  Returns:
+    float Tensor of shape [batch_size, from_seq_length, num_attention_heads,
+      size_per_head].
+
+  Raises:
+    ValueError: Any of the arguments or tensor shapes are invalid.
+  """
+  from_shape = get_shape_list(from_tensor, expected_rank=[2, 3])
+  to_shape = get_shape_list(to_tensor, expected_rank=[2, 3])
+  size_per_head = int(from_shape[2]/num_attention_heads)
+
+  if len(from_shape) != len(to_shape):
+    raise ValueError(
+        "The rank of `from_tensor` must match the rank of `to_tensor`.")
+
+  if len(from_shape) == 3:
+    batch_size = from_shape[0]
+    from_seq_length = from_shape[1]
+    to_seq_length = to_shape[1]
+  elif len(from_shape) == 2:
+    if (batch_size is None or from_seq_length is None or to_seq_length is None):
+      raise ValueError(
+          "When passing in rank 2 tensors to attention_layer, the values "
+          "for `batch_size`, `from_seq_length`, and `to_seq_length` "
+          "must all be specified.")
+
+  # Scalar dimensions referenced here:
+  #   B = batch size (number of sequences) B
+  #   F = `from_tensor` sequence length    T
+  #   T = `to_tensor` sequence length      T
+  #   N = `num_attention_heads`            H
+  #   H = `size_per_head`                  R
+  weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
+                          create_initializer(initializer_range), query_act,
+                          use_einsum, "query")
+
+  unfolded = unfold(from_tensor, kernel_size)
+
+  if attention_mask is not None:
+    if weight_softmax:
+      attention_mask = (1.0 - attention_mask) * -10000.0
+      attention_mask = unfold(attention_mask, kernel_size)
+      weight += attention_mask
+    else:
+      attention_mask = unfold(attention_mask, kernel_size)
+      weight = tf.multiply(weight, attention_mask)
+  
+  weight = tf.expand_dims(weight, -2)
+  if weight_softmax:
+    weight = tf.nn.softmax(weight)
+
+  weight = dropout(weight, attention_probs_dropout_prob)
+  unfolded = tf.reshape(unfolded, [batch_size, from_seq_length, num_attention_heads, size_per_head, kernel_size])
+  to_tensor = tf.multiply(unfolded, weight)
+  to_tensor = tf.math.reduce_sum(to_tensor, -1)
+  return tf.reshape(to_tensor, [batch_size, from_seq_length, num_attention_heads * size_per_head])
+
+
 def attention_ffn_block(layer_input,
                         hidden_size=768,
                         attention_mask=None,
@@ -942,7 +1059,9 @@ def attention_ffn_block(layer_input,
                         intermediate_act_fn=None,
                         initializer_range=0.02,
                         hidden_dropout_prob=0.0,
-                        use_einsum=True):
+                        use_einsum=True,
+                        kernel_size=0,
+                        weight_softmax=True):
   """A network with attention-ffn as sub-block.
 
   Args:
@@ -970,14 +1089,26 @@ def attention_ffn_block(layer_input,
 
   with tf.variable_scope("attention_1"):
     with tf.variable_scope("self"):
-      attention_output = attention_layer(
-          from_tensor=layer_input,
-          to_tensor=layer_input,
-          attention_mask=attention_mask,
-          num_attention_heads=num_attention_heads,
-          attention_probs_dropout_prob=attention_probs_dropout_prob,
-          initializer_range=initializer_range,
-          use_einsum=use_einsum)
+      if kernel_size > 0:
+        attention_output = conv_attention_layer(
+            from_tensor=layer_input,
+            to_tensor=layer_input,
+            attention_mask=attention_mask,
+            num_attention_heads=num_attention_heads,
+            attention_probs_dropout_prob=attention_probs_dropout_prob,
+            initializer_range=initializer_range,
+            use_einsum=use_einsum,
+            kernel_size=kernel_size,
+            weight_softmax=weight_softmax)
+      else:
+        attention_output = attention_layer(
+            from_tensor=layer_input,
+            to_tensor=layer_input,
+            attention_mask=attention_mask,
+            num_attention_heads=num_attention_heads,
+            attention_probs_dropout_prob=attention_probs_dropout_prob,
+            initializer_range=initializer_range,
+            use_einsum=use_einsum)
 
     # Run a linear projection of `hidden_size` then add a residual
     # with `layer_input`.
@@ -1029,7 +1160,9 @@ def transformer_model(input_tensor,
                       attention_probs_dropout_prob=0.1,
                       initializer_range=0.02,
                       do_return_all_layers=False,
-                      use_einsum=True):
+                      use_einsum=True,
+                      kernel_size=0,
+                      weight_softmax=True):
   """Multi-headed, multi-layer Transformer from "Attention is All You Need".
 
   This is almost an exact implementation of the original Transformer encoder.
@@ -1106,7 +1239,9 @@ def transformer_model(input_tensor,
                   intermediate_act_fn=intermediate_act_fn,
                   initializer_range=initializer_range,
                   hidden_dropout_prob=hidden_dropout_prob,
-                  use_einsum=use_einsum)
+                  use_einsum=use_einsum,
+                  kernel_size=kernel_size,
+                  weight_softmax=weight_softmax)
               prev_output = layer_output
               all_layer_outputs.append(layer_output)
   if do_return_all_layers:
