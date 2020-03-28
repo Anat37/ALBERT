@@ -1027,27 +1027,37 @@ def conv_attention_layer(from_tensor,
                           create_initializer(initializer_range), query_act,
                           use_einsum, "query")
 
-  unfolded = unfold(from_tensor, kernel_size)
-
   if attention_mask is not None:
     if weight_softmax:
-      attention_mask = (1.0 - tf.cast(attention_mask, tf.float32)) * -10000.0
-      attention_mask = unfold(attention_mask, kernel_size)
       weight += attention_mask
     else:
-      attention_mask = unfold(attention_mask, kernel_size)
       weight = tf.multiply(weight, attention_mask)
   
-  weight = tf.expand_dims(weight, -2)
   if weight_softmax:
     weight = tf.nn.softmax(weight)
-
   weight = dropout(weight, attention_probs_dropout_prob)
-  unfolded = tf.reshape(unfolded, [batch_size, from_seq_length, num_attention_heads, size_per_head, kernel_size])
-  to_tensor = tf.multiply(unfolded, weight)
-  to_tensor = tf.math.reduce_sum(to_tensor, -1)
-  #return tf.reshape(to_tensor, [batch_size, from_seq_length, num_attention_heads * size_per_head])
-  return to_tensor
+  # T B K N
+  weight = tf.transpose(weight, [1, 0, 3, 2])
+
+  paddings = [[0, 0], [kernel_size - 1, 0], [0,0]]
+  padded_length = from_seq_length + kernel_size - 1
+  padded = tf.pad(from_tensor, paddings)
+  padded = tf.reshape(padded, [batch_size, padded_length, num_attention_heads, size_per_head])
+
+  i = tf.constant(0)
+  result = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(batch_size, num_attention_heads, size_per_head))
+  c = lambda i, padded, weight, result: tf.less(i, from_seq_length)
+  def apply_filt(i, padded, weight, result):
+      #B K N S
+      window = padded[:, i:kernel_size + i]
+      #B K N 1
+      kernels = tf.expand_dims(weight[i], -1)
+
+      result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
+      return (i + 1, padded, weight, result)
+  i, padded, weight, result = tf.while_loop(c, apply_filt, [i, padded, weight, result], parallel_iterations=from_seq_length)
+  result = result.stack()
+  return tf.transpose(result, [1, 0, 2, 3])
 
 
 def attention_ffn_block(layer_input,
@@ -1221,6 +1231,11 @@ def transformer_model(input_tensor,
         None, use_einsum=use_einsum, name="embedding_hidden_mapping_in")
   else:
     prev_output = input_tensor
+  if kernel_size > 0:
+    if weight_softmax:
+      attention_mask = (1.0 - tf.cast(attention_mask, tf.float32)) * -10000.0
+    attention_mask = unfold(attention_mask, kernel_size)
+
   with tf.variable_scope("transformer", reuse=tf.AUTO_REUSE):
     for layer_idx in range(num_hidden_layers):
       group_idx = int(layer_idx / num_hidden_layers * num_hidden_groups)
