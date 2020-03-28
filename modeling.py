@@ -1031,7 +1031,7 @@ def conv_attention_layer(from_tensor,
 
   if attention_mask is not None:
     if weight_softmax:
-      attention_mask = (1.0 - attention_mask) * -10000.0
+      attention_mask = (1.0 - tf.cast(attention_mask, tf.float32)) * -10000.0
       attention_mask = unfold(attention_mask, kernel_size)
       weight += attention_mask
     else:
