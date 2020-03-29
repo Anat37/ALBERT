@@ -938,12 +938,17 @@ def attention_layer(from_tensor,
   return tf.transpose(new_embeddings, [0, 2, 1, 3])
 
 
+def get_l_padding(kernel_size):
+  l_pad = kernel_size // 2
+  return l_pad
+
 def unfold(from_tensor, kernel_size):
   from_shape = get_shape_list(from_tensor, expected_rank=[2, 3])
+  l_pad = get_l_padding(kernel_size)
   if len(from_shape) == 3:
-    paddings = [[0, 0], [kernel_size - 1, 0], [0,0]]
+    paddings = [[0, 0], [l_pad, kernel_size - l_pad - 1], [0,0]]
   else:
-    paddings = [[0, 0], [kernel_size - 1, 0]]
+    paddings = [[0, 0], [l_pad, kernel_size - l_pad - 1]]
   t = tf.expand_dims(tf.pad(from_tensor, paddings), -1)
   l = [t[:, i:i-kernel_size+1] for i in range(kernel_size - 1)]
   l.append(t[:, kernel_size-1:])
@@ -1039,7 +1044,8 @@ def conv_attention_layer(from_tensor,
   # T B K N
   weight = tf.transpose(weight, [1, 0, 3, 2])
 
-  paddings = [[0, 0], [kernel_size - 1, 0], [0,0]]
+  l_pad = get_l_padding(kernel_size)
+  paddings = [[0, 0], [l_pad, kernel_size - l_pad - 1], [0,0]]
   padded_length = from_seq_length + kernel_size - 1
   padded = tf.pad(from_tensor, paddings)
   padded = tf.reshape(padded, [batch_size, padded_length, num_attention_heads, size_per_head])
