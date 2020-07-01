@@ -1052,16 +1052,16 @@ def conv_attention_layer(from_tensor,
 
   i = tf.constant(0)
   result = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(batch_size, num_attention_heads, size_per_head))
-  c = lambda i, padded, weight, result: tf.less(i, from_seq_length)
+  c = lambda i, padded, weight, result: i < from_seq_length# tf.less(i, from_seq_length)
   def apply_filt(i, padded, weight, result):
       #B K N S
       window = padded[:, i:kernel_size + i]
       #B K N 1
       kernels = tf.expand_dims(weight[i], -1)
 
-      result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
+      result = result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
       return (i + 1, padded, weight, result)
-  i, padded, weight, result = tf.while_loop(c, apply_filt, [i, padded, weight, result], parallel_iterations=from_seq_length)
+  i, padded, weight, result = tf.while_loop(c, apply_filt, [i, padded, weight, result]) # , parallel_iterations=from_seq_length
   result = result.stack()
   return tf.transpose(result, [1, 0, 2, 3])
 
