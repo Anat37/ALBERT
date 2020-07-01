@@ -1061,7 +1061,7 @@ def conv_attention_layer(from_tensor,
 
       result = result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
       return (i + 1, padded, weight, result)
-  i, padded, weight, result = tf.while_loop(c, apply_filt, [i, padded, weight, result], parallel_iterations=from_seq_length)
+  i, padded, weight, result = tf.while_loop(c, apply_filt, [i, padded, weight, result], maximum_iterations=from_seq_length, parallel_iterations=from_seq_length)
   result = result.stack()
   return tf.transpose(result, [1, 0, 2, 3])
 
