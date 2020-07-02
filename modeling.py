@@ -1057,11 +1057,11 @@ def conv_attention_layer(from_tensor,
       window = tf.TensorArray(tf.float32, size=kernel_size, element_shape=(batch_size, num_attention_heads, size_per_head))
       for k in range(kernel_size):
         window = window.write(k, padded[:, i + k])
-      window = window.stack()
-      window = tf.transpose(window, [0, 3, 1, 2])
+      window = window.stack() # K B N S
+      window = tf.transpose(window, [1, 0, 2, 3]) # K S B N
       #B K N S
       #window = padded[:, i:kernel_size + i]
-      #B K N 1
+      #B K N 1 [?,64,128,12], [128,128,12,1]
       kernels = tf.expand_dims(weight[i], -1)
 
       result = result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
