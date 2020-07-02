@@ -1054,8 +1054,11 @@ def conv_attention_layer(from_tensor,
   result = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(batch_size, num_attention_heads, size_per_head))
   c = lambda i, padded, weight, result: tf.less(i, from_seq_length)
   def apply_filt(i, padded, weight, result):
-      l = [padded[:, k] for k in range(kernel_size)]
-      window = tf.stack(l, 1)
+      window = tf.TensorArray(tf.float32, size=kernel_size, element_shape=(batch_size, 1, num_attention_heads, size_per_head))
+      for k in range(kernel_size):
+        window = window.write(k, tf.squeeze(padded[:, i + k], 1))
+      window = window.stack()
+      window = tf.transpose(window, [0, 3, 1, 2])
       #B K N S
       #window = padded[:, i:kernel_size + i]
       #B K N 1
