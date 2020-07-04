@@ -996,10 +996,10 @@ def conv_attention_layer(from_tensor,
   #   T = `to_tensor` sequence length      T
   #   N = `num_attention_heads`            H
   #   H = `size_per_head`                  R
-  weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
-                          create_initializer(initializer_range), query_act,
-                          use_einsum, "kernels")
-  #weight = tf.fill([batch_size, from_seq_length, num_attention_heads, kernel_size], 1.0)
+  #weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
+  #                        create_initializer(initializer_range), query_act,
+  #                        use_einsum, "kernels")
+  weight = tf.fill([batch_size, from_seq_length, num_attention_heads, kernel_size], 1.0)
   # [B, T, N, H]
 
   l_pad = get_l_padding(kernel_size)
@@ -1011,8 +1011,8 @@ def conv_attention_layer(from_tensor,
 
   # [B, T, N, K]
   l = [tf.pad(weight[:, i], [[0, 0], [0,0], [i, padded_length - kernel_size - i]], constant_values=-10000) for i in range(from_seq_length)]
-  logits = tf.stack(l, 0) #T B N T_P -> B N T T_P
-  logits = tf.transpose(logits, [1, 2, 0, 3])
+  logits = tf.stack(l, 2) #T B N T_P -> B N T T_P
+  #logits = tf.transpose(logits, [1, 2, 0, 3])
   #logits = l[0]
 
   if attention_mask is not None:
