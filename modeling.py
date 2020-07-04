@@ -809,7 +809,7 @@ def dot_product_attention(q, k, v, bias, dropout_rate=0.0):
 
   Returns:
     Tensor with shape [..., length_q, depth_v].
-  """
+  """ # B N T H
   logits = tf.matmul(q, k, transpose_b=True)  # [..., length_q, length_kv]
   logits = tf.multiply(logits, 1.0 / math.sqrt(float(get_shape_list(q)[-1])))
   if bias is not None:
@@ -927,14 +927,14 @@ def attention_layer(from_tensor,
                      use_einsum, "value")
   q = tf.transpose(q, [0, 2, 1, 3])
   k = tf.transpose(k, [0, 2, 1, 3])
-  v = tf.transpose(v, [0, 2, 1, 3])
+  v = tf.transpose(v, [0, 2, 1, 3]) # B N T H
   if attention_mask is not None:
     attention_mask = tf.reshape(
         attention_mask, [batch_size, 1, to_seq_length, 1])
     # 'new_embeddings = [B, N, F, H]'
   new_embeddings = dot_product_attention(q, k, v, attention_mask,
                                          attention_probs_dropout_prob)
-
+  
   return tf.transpose(new_embeddings, [0, 2, 1, 3])
 
 
@@ -957,6 +957,89 @@ def unfold(from_tensor, kernel_size):
 
 
 def conv_attention_layer(from_tensor,
+                        to_tensor,
+                        attention_mask=None,
+                        num_attention_heads=1,
+                        query_act=None,
+                        key_act=None,
+                        value_act=None,
+                        attention_probs_dropout_prob=0.0,
+                        initializer_range=0.02,
+                        batch_size=None,
+                        from_seq_length=None,
+                        to_seq_length=None,
+                        use_einsum=True,
+                        kernel_size=7,
+                        weight_softmax=True):
+  from_shape = get_shape_list(from_tensor, expected_rank=[2, 3])
+  to_shape = get_shape_list(to_tensor, expected_rank=[2, 3])
+  size_per_head = int(from_shape[2]/num_attention_heads)
+
+  if len(from_shape) != len(to_shape):
+    raise ValueError(
+        "The rank of `from_tensor` must match the rank of `to_tensor`.")
+
+  if len(from_shape) == 3:
+    batch_size = from_shape[0]
+    from_seq_length = from_shape[1]
+    to_seq_length = to_shape[1]
+  elif len(from_shape) == 2:
+    if (batch_size is None or from_seq_length is None or to_seq_length is None):
+      raise ValueError(
+          "When passing in rank 2 tensors to attention_layer, the values "
+          "for `batch_size`, `from_seq_length`, and `to_seq_length` "
+          "must all be specified.")
+
+  # Scalar dimensions referenced here:
+  #   B = batch size (number of sequences) B
+  #   F = `from_tensor` sequence length    T
+  #   T = `to_tensor` sequence length      T
+  #   N = `num_attention_heads`            H
+  #   H = `size_per_head`                  R
+  weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
+                          create_initializer(initializer_range), query_act,
+                          use_einsum, "kernels")
+  #weight = tf.fill([batch_size, from_seq_length, num_attention_heads, kernel_size], 1.0)
+  # [B, T, N, H]
+
+  l_pad = get_l_padding(kernel_size)
+  paddings = [[0, 0], [l_pad, kernel_size - l_pad - 1], [0,0]]
+  padded_length = from_seq_length + kernel_size - 1
+  padded = tf.pad(from_tensor, paddings)
+  padded = tf.reshape(padded, [batch_size, padded_length, num_attention_heads, size_per_head])
+  padded = tf.transpose(padded, [0, 2, 1, 3]) # B N T_P H
+
+  # [B, T, N, K]
+  l = [tf.pad(weight[:, i], [[0, 0], [0,0], [i, padded_length - kernel_size - i]], constant_values=-10000) for i in range(from_seq_length)]
+  logits = tf.stack(l, 0) #T B N T_P -> B N T T_P
+  logits = tf.transpose(logits, [1, 2, 0, 3])
+  #logits = l[0]
+
+  if attention_mask is not None:
+    # `attention_mask` = [B, T]
+    broadcast_ones = tf.ones([batch_size, 1, from_seq_length, 1], tf.float32)
+
+    adder = tf.matmul(broadcast_ones,
+                     tf.cast(attention_mask, tf.float32), transpose_b=True)
+
+    # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
+    # masked positions, this operation will create a tensor which is 0.0 for
+    # positions we want to attend and -10000.0 for masked positions.
+    if weight_softmax:
+      #adder = (1.0 - adder) * -10000.0
+      logits += adder
+    else:
+      logits *= adder
+    
+
+  if weight_softmax:
+    logits = tf.nn.softmax(logits, name="attention_probs")
+  attention_probs = dropout(logits, attention_probs_dropout_prob)
+  new_embeddings = tf.matmul(attention_probs, padded)
+  return tf.transpose(new_embeddings, [0, 2, 1, 3]), padded, logits
+
+
+def conv_attention_layer_1(from_tensor,
                         to_tensor,
                         attention_mask=None,
                         num_attention_heads=1,
@@ -1028,10 +1111,10 @@ def conv_attention_layer(from_tensor,
   #   T = `to_tensor` sequence length      T
   #   N = `num_attention_heads`            H
   #   H = `size_per_head`                  R
-  weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
-                          create_initializer(initializer_range), query_act,
-                          use_einsum, "query")
-
+  #weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
+  #                        create_initializer(initializer_range), query_act,
+  #                        use_einsum, "query")
+  weight = tf.fill([from_tensor, batch_size, num_attention_heads, kernel_size], 1)
   if attention_mask is not None:
     if weight_softmax:
       weight += attention_mask
@@ -1242,10 +1325,16 @@ def transformer_model(input_tensor,
         None, use_einsum=use_einsum, name="embedding_hidden_mapping_in")
   else:
     prev_output = input_tensor
-  if kernel_size > 0:
+  if kernel_size > 0 and attention_mask is not None:
+    
+    
+    #attention_mask = unfold(attention_mask, kernel_size)
+    attention_mask = tf.reshape(attention_mask, [input_shape[0], 1, input_shape[1], 1])
+    l_pad = get_l_padding(kernel_size)
+    paddings = [[0, 0], [0,0], [l_pad, kernel_size - l_pad - 1], [0,0]]
+    attention_mask = tf.pad(attention_mask, paddings)
     if weight_softmax:
       attention_mask = (1.0 - tf.cast(attention_mask, tf.float32)) * -10000.0
-    attention_mask = unfold(attention_mask, kernel_size)
 
   with tf.variable_scope("transformer", reuse=tf.AUTO_REUSE):
     for layer_idx in range(num_hidden_layers):
