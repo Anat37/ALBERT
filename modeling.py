@@ -996,10 +996,10 @@ def conv_attention_layer(from_tensor,
   #   T = `to_tensor` sequence length      T
   #   N = `num_attention_heads`            H
   #   H = `size_per_head`                  R
-  #weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
-  #                        create_initializer(initializer_range), query_act,
-  #                        use_einsum, "kernels")
-  weight = tf.fill([batch_size, from_seq_length, num_attention_heads, kernel_size], 1.0)
+  weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
+                          create_initializer(initializer_range), query_act,
+                          use_einsum, "kernels")
+  #weight = tf.fill([batch_size, from_seq_length, num_attention_heads, kernel_size], 1.0)
   # [B, T, N, H]
 
   l_pad = get_l_padding(kernel_size)
@@ -1009,9 +1009,15 @@ def conv_attention_layer(from_tensor,
   padded = tf.reshape(padded, [batch_size, padded_length, num_attention_heads, size_per_head])
   padded = tf.transpose(padded, [0, 2, 1, 3]) # B N T_P H
 
+  padded_weights = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(batch_size, num_attention_heads, padded_length))
+  for k in range(from_seq_length):
+    padded_weights = padded_weights.write(k, tf.pad(weight[:, k], [[0, 0], [0,0], [k, padded_length - kernel_size - k]], constant_values=-10000))
+  logits = padded_weights.stack()
+  logits = tf.transpose(logits, [1, 2, 0, 3])
+
   # [B, T, N, K]
-  l = [tf.pad(weight[:, i], [[0, 0], [0,0], [i, padded_length - kernel_size - i]], constant_values=-10000) for i in range(from_seq_length)]
-  logits = tf.stack(l, 2) #T B N T_P -> B N T T_P
+  #l = [tf.pad(weight[:, i], [[0, 0], [0,0], [i, padded_length - kernel_size - i]], constant_values=-10000) for i in range(from_seq_length)]
+  #logits = tf.stack(l, 2) #T B N T_P -> B N T T_P
   #logits = tf.transpose(logits, [1, 2, 0, 3])
   #logits = l[0]
 
