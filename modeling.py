@@ -1036,7 +1036,7 @@ def conv_attention_layer(from_tensor,
     logits = tf.nn.softmax(logits, name="attention_probs")
   attention_probs = dropout(logits, attention_probs_dropout_prob)
   new_embeddings = tf.matmul(attention_probs, padded)
-  return tf.transpose(new_embeddings, [0, 2, 1, 3]), padded, logits
+  return tf.transpose(new_embeddings, [0, 2, 1, 3])
 
 
 def conv_attention_layer_1(from_tensor,
