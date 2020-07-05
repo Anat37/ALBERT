@@ -1121,7 +1121,7 @@ def conv_attention_layer(from_tensor,
   weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
                           create_initializer(initializer_range), query_act,
                           use_einsum, "query")
-  #weight = tf.fill([from_tensor, batch_size, num_attention_heads, kernel_size], 1)
+  #weight = tf.fill([batch_size, from_seq_length, num_attention_heads, kernel_size], 1.0)
   if attention_mask is not None:
     if weight_softmax:
       weight += attention_mask
@@ -1131,8 +1131,9 @@ def conv_attention_layer(from_tensor,
   if weight_softmax:
     weight = tf.nn.softmax(weight)
   weight = dropout(weight, attention_probs_dropout_prob)
-  # T B K N
-  weight = tf.transpose(weight, [1, 0, 3, 2])
+  # T B K N old
+  # T K B N
+  weight = tf.transpose(weight, [1, 3, 0, 2])
 
   l_pad = get_l_padding(kernel_size)
   paddings = [[0, 0], [l_pad, kernel_size - l_pad - 1], [0,0]]
@@ -1141,24 +1142,26 @@ def conv_attention_layer(from_tensor,
   padded = tf.reshape(padded, [batch_size, padded_length, num_attention_heads, size_per_head])
 
   i = tf.constant(0)
-  result = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(batch_size, num_attention_heads, size_per_head))
+  result = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(1, batch_size, num_attention_heads, size_per_head))
   c = lambda i, padded, weight, result: tf.less(i, from_seq_length)
   def apply_filt(i, padded, weight, result):
-      #window = tf.TensorArray(tf.float32, size=kernel_size, element_shape=(batch_size, num_attention_heads, size_per_head))
-      #for k in range(kernel_size):
-      #  window = window.write(k, padded[:, i + k])
-      #window = window.stack() # K B N S
+      window = tf.TensorArray(tf.float32, size=kernel_size, element_shape=(1, batch_size, num_attention_heads, size_per_head))
+      for k in range(kernel_size):
+        window = window.write(k, tf.expand_dims(padded[:, i + k], 0))
+      window = window.concat() # K B N S
       #window = tf.transpose(window, [1, 0, 2, 3]) # K S B N
+      
       #B K N S
-      window = padded[:, i:kernel_size + i]
+      #window = padded[:, i:kernel_size + i]
       #window = tf.transpose(window, [1, 3, 0, 2])
-      #B K N 1 [?,64,128,12], [128,128,12,1]
-      kernels = tf.expand_dims(weight[i], -1) # [?,64,16,12], [16,128,12,1].
+      #B K N 1 old
+      #K B N 1 old
+      kernels = tf.expand_dims(weight[i], -1)
 
-      result = result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
+      result = result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 0, keepdims=True))
       return [i + 1, padded, weight, result]
   i, padded, weight, result = tf.while_loop(c, apply_filt, [i, padded, weight, result], maximum_iterations=from_seq_length, parallel_iterations=from_seq_length)
-  result = result.stack()
+  result = result.concat()
   return tf.transpose(result, [1, 0, 2, 3])
 
 
