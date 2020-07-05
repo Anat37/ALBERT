@@ -1151,9 +1151,9 @@ def conv_attention_layer(from_tensor,
       #window = tf.transpose(window, [1, 0, 2, 3]) # K S B N
       #B K N S
       window = padded[:, i:kernel_size + i]
-      window = tf.transpose(window, [1, 3, 0, 2])
+      #window = tf.transpose(window, [1, 3, 0, 2])
       #B K N 1 [?,64,128,12], [128,128,12,1]
-      kernels = tf.expand_dims(weight[i], -1)
+      kernels = tf.expand_dims(weight[i], -1) # [?,64,16,12], [16,128,12,1].
 
       result = result.write(i, tf.reduce_sum(tf.multiply(window, kernels), 1))
       return [i + 1, padded, weight, result]
