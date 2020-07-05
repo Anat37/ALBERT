@@ -956,7 +956,7 @@ def unfold(from_tensor, kernel_size):
   return t
 
 
-def conv_attention_layer(from_tensor,
+def conv_attention_layer_fail(from_tensor,
                         to_tensor,
                         attention_mask=None,
                         num_attention_heads=1,
@@ -1046,7 +1046,7 @@ def conv_attention_layer(from_tensor,
   return tf.transpose(new_embeddings, [0, 2, 1, 3])
 
 
-def conv_attention_layer_1(from_tensor,
+def conv_attention_layer(from_tensor,
                         to_tensor,
                         attention_mask=None,
                         num_attention_heads=1,
@@ -1118,10 +1118,10 @@ def conv_attention_layer_1(from_tensor,
   #   T = `to_tensor` sequence length      T
   #   N = `num_attention_heads`            H
   #   H = `size_per_head`                  R
-  #weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
-  #                        create_initializer(initializer_range), query_act,
-  #                        use_einsum, "query")
-  weight = tf.fill([from_tensor, batch_size, num_attention_heads, kernel_size], 1)
+  weight = dense_layer_3d(from_tensor, num_attention_heads, kernel_size,
+                          create_initializer(initializer_range), query_act,
+                          use_einsum, "query")
+  #weight = tf.fill([from_tensor, batch_size, num_attention_heads, kernel_size], 1)
   if attention_mask is not None:
     if weight_softmax:
       weight += attention_mask
@@ -1144,13 +1144,14 @@ def conv_attention_layer_1(from_tensor,
   result = tf.TensorArray(tf.float32, size=from_seq_length, element_shape=(batch_size, num_attention_heads, size_per_head))
   c = lambda i, padded, weight, result: tf.less(i, from_seq_length)
   def apply_filt(i, padded, weight, result):
-      window = tf.TensorArray(tf.float32, size=kernel_size, element_shape=(batch_size, num_attention_heads, size_per_head))
-      for k in range(kernel_size):
-        window = window.write(k, padded[:, i + k])
-      window = window.stack() # K B N S
-      window = tf.transpose(window, [1, 0, 2, 3]) # K S B N
+      #window = tf.TensorArray(tf.float32, size=kernel_size, element_shape=(batch_size, num_attention_heads, size_per_head))
+      #for k in range(kernel_size):
+      #  window = window.write(k, padded[:, i + k])
+      #window = window.stack() # K B N S
+      #window = tf.transpose(window, [1, 0, 2, 3]) # K S B N
       #B K N S
-      #window = padded[:, i:kernel_size + i]
+      window = padded[:, i:kernel_size + i]
+      window = tf.transpose(window, [1, 3, 0, 2])
       #B K N 1 [?,64,128,12], [128,128,12,1]
       kernels = tf.expand_dims(weight[i], -1)
 
@@ -1335,13 +1336,14 @@ def transformer_model(input_tensor,
   if kernel_size > 0 and attention_mask is not None:
     
     
-    #attention_mask = unfold(attention_mask, kernel_size)
-    attention_mask = tf.reshape(attention_mask, [input_shape[0], 1, input_shape[1], 1])
-    l_pad = get_l_padding(kernel_size)
-    paddings = [[0, 0], [0,0], [l_pad, kernel_size - l_pad - 1], [0,0]]
-    attention_mask = tf.pad(attention_mask, paddings)
+    
+    #attention_mask = tf.reshape(attention_mask, [input_shape[0], 1, input_shape[1], 1])
+    #l_pad = get_l_padding(kernel_size)
+    #paddings = [[0, 0], [0,0], [l_pad, kernel_size - l_pad - 1], [0,0]]
+    #attention_mask = tf.pad(attention_mask, paddings)
     if weight_softmax:
       attention_mask = (1.0 - tf.cast(attention_mask, tf.float32)) * -10000.0
+    attention_mask = unfold(attention_mask, kernel_size)
 
   with tf.variable_scope("transformer", reuse=tf.AUTO_REUSE):
     for layer_idx in range(num_hidden_layers):
